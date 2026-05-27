@@ -24,6 +24,7 @@ class SlipstreamService : Service() {
     private var procJob: Job? = null
 
     private var logListener: ((String) -> Unit)? = null
+    private var onExitListener: ((Int) -> Unit)? = null
 
     private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
 
@@ -65,6 +66,7 @@ class SlipstreamService : Service() {
 
                 proc = null
                 procJob = null
+                onExitListener?.invoke(code)
             }
 
         } catch (t: Throwable) {
@@ -115,6 +117,10 @@ class SlipstreamService : Service() {
             val copy: List<String> = synchronized(logBuffer) { logBuffer.toList() }
             copy.forEach { listener(it) }
         }
+    }
+
+    fun setOnExitListener(listener: ((Int) -> Unit)?) {
+        onExitListener = listener
     }
 
 

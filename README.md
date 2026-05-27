@@ -53,10 +53,10 @@ Internet Access
 
 ## Status
 
-![Latest Release](https://img.shields.io/github/v/release/VortexOne404/slipstream-client-android)
-![Downloads](https://img.shields.io/github/downloads/VortexOne404/slipstream-client-android/total)
-![Stars](https://img.shields.io/github/stars/VortexOne404/slipstream-client-android)
-![Forks](https://img.shields.io/github/forks/VortexOne404/slipstream-client-android)
+![Latest Release](https://img.shields.io/github/v/release/ElJoker63/slipstream-client-android)
+![Downloads](https://img.shields.io/github/downloads/ElJoker63/slipstream-client-android/total)
+![Stars](https://img.shields.io/github/stars/ElJoker63/slipstream-client-android)
+![Forks](https://img.shields.io/github/forks/ElJoker63/slipstream-client-android)
 
 ---
 
@@ -180,7 +180,7 @@ Internet
 Clone with submodules:
 
 ```bash
-git clone --recurse-submodules https://github.com/VortexOne404/slipstream-client-android.git
+git clone --recurse-submodules https://github.com/ElJoker63/slipstream-client-android.git
 cd slipstream-client-android
 ```
 
@@ -194,7 +194,7 @@ Build:
 
 ## Support
 
-Telegram: https://t.me/VortexOne
+Telegram: https://t.me/ElJoker63
 Telegram Channel: https://t.me/silk_road_community
 
 ---

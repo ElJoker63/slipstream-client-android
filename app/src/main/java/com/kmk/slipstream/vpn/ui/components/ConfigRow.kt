@@ -48,7 +48,7 @@ fun ConfigRow(
                 Text(maskDomain(cfg.domain), style = MaterialTheme.typography.bodySmall)
             }
 
-            Box {
+            /*Box {
                 IconButton(onClick = { if (enabled) menu = true }, enabled = enabled) {
                     Icon(Icons.Default.MoreVert, contentDescription = "More")
                 }
@@ -56,11 +56,11 @@ fun ConfigRow(
                     DropdownMenuItem(text = { Text("Copy") }, onClick = { menu = false; onCopy() })
                     DropdownMenuItem(text = { Text("Share") }, onClick = { menu = false; onShare() })
                 }
-            }
+            }*/
 
-            IconButton(onClick = onEdit, enabled = enabled) {
+            /*IconButton(onClick = onEdit, enabled = enabled) {
                 Icon(Icons.Default.Edit, contentDescription = "Edit")
-            }
+            }*/
             IconButton(onClick = onDelete, enabled = enabled) {
                 Icon(Icons.Default.Delete, contentDescription = "Delete")
             }

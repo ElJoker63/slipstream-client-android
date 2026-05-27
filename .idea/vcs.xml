@@ -17,10 +17,6 @@
     <mapping directory="$PROJECT_DIR$/app/src/main/rust/third_party/openssl/gost-engine/libprov" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/app/src/main/rust/third_party/openssl/krb5" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/app/src/main/rust/third_party/openssl/oqs-provider" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/app/src/main/rust/third_party/openssl/pkcs11-provider" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/app/src/main/rust/third_party/openssl/pkcs11-provider/python-ecdsa" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/app/src/main/rust/third_party/openssl/pkcs11-provider/tlsfuzzer" vcs="Git" />
-    <mapping directory="$PROJECT_DIR$/app/src/main/rust/third_party/openssl/pkcs11-provider/tlslite-ng" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/app/src/main/rust/third_party/openssl/pyca-cryptography" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/app/src/main/rust/third_party/openssl/python-ecdsa" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/app/src/main/rust/third_party/openssl/tlsfuzzer" vcs="Git" />

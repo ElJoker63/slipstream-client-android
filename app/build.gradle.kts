@@ -33,6 +33,13 @@ fun clangFor(triple: String, api: Int, toolchainBin: File): String = when (tripl
     else -> toolchainBin.resolve("clang").absolutePath
 }
 
+fun File.bashPath(): String {
+    val normalized = absolutePath.replace('\\', '/')
+    return normalized.replace(Regex("^([A-Za-z]):")) { match ->
+        "/${match.groupValues[1].lowercase()}"
+    }
+}
+
 val keystorePropsFile = rootProject.file("app/keystore.properties")
 val keystoreProps = Properties().apply {
     if (keystorePropsFile.exists()) {
@@ -140,6 +147,7 @@ opensslAbis.forEach { a ->
     tasks.register(opensslTaskName(a.abi)) {
         group = "native"
         description = "Build OpenSSL for ${a.abi} (${a.opensslTarget})"
+        notCompatibleWithConfigurationCache("OpenSSL builds shell out through bash with resolved Android SDK/NDK paths.")
 
         inputs.dir(opensslSrcDir)
         outputs.dir(opensslOutDir.resolve(a.abi))
@@ -150,37 +158,41 @@ opensslAbis.forEach { a ->
             val bin = ndkDir.resolve("toolchains/llvm/prebuilt").resolve(hostTag).resolve("bin")
 
             val api = minSdkVersionValue
-            val prefix = opensslOutDir.resolve(a.abi).absolutePath
+            val prefix = opensslOutDir.resolve(a.abi).bashPath()
             val buildDir = layout.buildDirectory.dir("openssl-build/${a.abi}").get().asFile
+            val buildDirPath = buildDir.bashPath()
+            val ndkDirPath = ndkDir.bashPath()
+            val opensslSrcPath = opensslSrcDir.bashPath()
 
+            val nproc = Runtime.getRuntime().availableProcessors()
             val cmd = """
         set -euo pipefail
-        if [ ! -f "${opensslSrcDir.absolutePath}/Configure" ]; then
-          echo "OpenSSL submodule not found or not initialized at: ${opensslSrcDir.absolutePath}"
+        if [ ! -f "$opensslSrcPath/Configure" ]; then
+          echo "OpenSSL submodule not found or not initialized at: $opensslSrcPath"
           echo "Run: git submodule update --init --recursive"
           exit 1
         fi
 
-        mkdir -p "$buildDir"
-        cd "$buildDir"
+        mkdir -p "$buildDirPath"
+        cd "$buildDirPath"
 
-        export ANDROID_NDK_ROOT="${ndkDir.absolutePath}"
-        export ANDROID_NDK="${ndkDir.absolutePath}"
+        export ANDROID_NDK_ROOT="$ndkDirPath"
+        export ANDROID_NDK="$ndkDirPath"
 
 
-        perl "${opensslSrcDir.absolutePath}/Configure" ${a.opensslTarget} -D__ANDROID_API__=$api \
+        perl "$opensslSrcPath/Configure" ${a.opensslTarget} -D__ANDROID_API__=$api \
           no-shared no-tests --prefix="$prefix"
 
-        make -j${'$'}(nproc) || make -j${'$'}(nproc)
+        make -j$nproc || make -j1
         make install_sw
     """.trimIndent()
 
             exec {
-                executable = "/usr/bin/bash"
+                executable = "bash"
                 args("-c", cmd)
 
                 val currentPath = System.getenv("PATH") ?: ""
-                environment("PATH", "${bin.absolutePath}:$currentPath")
+                environment("PATH", "${bin.bashPath()}:$currentPath")
             }
         }
     }
@@ -219,6 +231,7 @@ rustTargets.forEach { t ->
     tasks.register(rustTaskName(t.abi)) {
         group = "rust"
         description = "Build Rust for ${t.abi} (${t.triple})"
+        notCompatibleWithConfigurationCache("Rust builds resolve Android SDK/NDK and project paths at execution time.")
 
         // Build OpenSSL for this ABI first
         dependsOn(opensslTaskName(t.abi))
@@ -372,14 +385,19 @@ configurations.all {
 
 // ---- Hook Rust build into Android build ----
 afterEvaluate {
-    // When building APK/AAB, make sure Rust/OpenSSL are built first
-    tasks.matching { t ->
-        t.name in setOf(
-            "preBuild",
-            "preDebugBuild",
-            "preReleaseBuild"
-        )
-    }.configureEach {
-        dependsOn("cargoBuild")
+    val isSyncing = project.providers.gradleProperty("android.injected.invoked.from.ide")
+        .getOrElse("false").toBoolean() || System.getProperty("idea.sync.active") == "true"
+
+    if (!isSyncing) {
+        // When building APK/AAB, make sure Rust/OpenSSL are built first
+        tasks.matching { t ->
+            t.name in setOf(
+                "preBuild",
+                "preDebugBuild",
+                "preReleaseBuild"
+            )
+        }.configureEach {
+            dependsOn("cargoBuild")
+        }
     }
 }

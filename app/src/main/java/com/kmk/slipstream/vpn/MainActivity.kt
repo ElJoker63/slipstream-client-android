@@ -219,8 +219,8 @@ class MainActivity : ComponentActivity() {
                                 Divider()
                                 Spacer(Modifier.height(12.dp))
 
-                                DrawerLinkItem("GitHub", "Project repository", Icons.Default.Launch, "https://github.com/VortexOne404/slipstream-client-android", this@MainActivity)
-                                DrawerLinkItem("Telegram", "@VortexOne", Icons.Default.Send, "https://t.me/VortexOne", this@MainActivity)
+                                DrawerLinkItem("GitHub", "Project repository", Icons.Default.Launch, "https://github.com/ElJoker63/slipstream-client-android", this@MainActivity)
+                                DrawerLinkItem("Telegram", "ElQtAnikila", Icons.Default.Send, "https://t.me/imoverclocked", this@MainActivity)
                             }
                         },
                         modifier = Modifier.padding(innerPadding)
@@ -260,8 +260,8 @@ class MainActivity : ComponentActivity() {
 
                             DrawerPage.INFO -> InfoScreen(
                                 onMenu = { scope.launch { drawerState.open() } },
-                                githubUrl = "https://github.com/VortexOne404/slipstream-client-android",
-                                telegramUrl = "https://t.me/VortexOne"
+                                githubUrl = "https://github.com/ElJoker63/slipstream-client-android",
+                                telegramUrl = "https://t.me/ElJoker63"
                             )
                         }
                     }

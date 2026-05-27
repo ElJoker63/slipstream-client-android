@@ -70,6 +70,12 @@ class SlipstreamVpnService : VpnService() {
             val b = service as? SlipstreamService.LocalBinder
             slipstream = b?.getService()
             bound = slipstream != null
+            slipstream?.setOnExitListener { code ->
+                if (!stopping) {
+                    Log.w(TAG, "Slipstream core exited (code=$code). Reconnecting...")
+                    reconnect()
+                }
+            }
         }
         override fun onServiceDisconnected(name: ComponentName?) {
             bound = false
@@ -90,7 +96,12 @@ class SlipstreamVpnService : VpnService() {
         sendStatus(VpnUiState.DISCONNECTED, "created")
     }
 
+    private var lastIntent: Intent? = null
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action != ACTION_DISCONNECT) {
+            lastIntent = intent
+        }
 
         when (intent?.action) {
             ACTION_DISCONNECT -> {
@@ -220,6 +231,53 @@ class SlipstreamVpnService : VpnService() {
         try { builder.addDisallowedApplication(packageName) } catch (_: Throwable) {}
 
         return builder.establish() ?: throw IllegalStateException("TUN establish failed")
+    }
+
+    private fun reconnect() {
+        if (stopping) return
+        scope.launch {
+            Log.i(TAG, "Starting reconnection attempt...")
+            sendStatus(VpnUiState.CONNECTING, "reconnecting")
+            
+            // Clean up old session
+            try { TProxyService.TProxyStopService() } catch (_: Throwable) {}
+            try { slipstream?.stopSlipstream() } catch (_: Throwable) {}
+            
+            delay(2000) // wait a bit
+            
+            val intent = lastIntent
+            if (intent == null) {
+                Log.e(TAG, "Reconnect failed: lastIntent is null")
+                return@launch
+            }
+
+            val dnsList = intent.getStringArrayExtra(EXTRA_RESOLVER_LIST) ?: emptyArray()
+            val resolver = dnsList.toList()
+            val domain = intent.getStringExtra(EXTRA_DOMAIN) ?: "google.com"
+            val port = 5201
+            val socksAuthEnabled = intent.getBooleanExtra(EXTRA_SOCKS5_AUTH_ENABLED, false)
+            val socksAuthUsername = intent.getStringExtra(EXTRA_SOCKS5_AUTH_USERNAME)
+            val socksAuthPassword = intent.getStringExtra(EXTRA_SOCKS5_AUTH_PASSWORD)
+
+            try {
+                slipstream?.startSlipstream(resolver, domain, port)
+                
+                startTProxy(
+                    tun = tunPfd!!,
+                    socksHost = "127.0.0.1",
+                    socksPort = port,
+                    authEnabled = socksAuthEnabled,
+                    username = socksAuthUsername,
+                    password = socksAuthPassword
+                )
+                
+                sendStatus(VpnUiState.CONNECTED, "reconnected")
+                updateNotification("Connected", "Reconnected after interruption")
+            } catch (t: Throwable) {
+                Log.e(TAG, "Reconnection failed: ${t.message}")
+                // It will trigger again if the process fails to start
+            }
+        }
     }
 
     private fun safeUnbind() {
