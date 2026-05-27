@@ -6,6 +6,7 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import androidx.annotation.RequiresApi
+import com.kmk.slipstream.vpn.util.AppLogger
 import kotlinx.coroutines.*
 import java.io.BufferedReader
 import java.io.File
@@ -22,6 +23,8 @@ class SlipstreamService : Service() {
 
     @Volatile private var proc: Process? = null
     private var procJob: Job? = null
+    @Volatile private var isRunning = false
+    private val startLock = Any()
 
     private var logListener: ((String) -> Unit)? = null
     private var onExitListener: ((Int) -> Unit)? = null
@@ -35,66 +38,85 @@ class SlipstreamService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     fun startSlipstream(resolvers: List<String>, domain: String, tcpListenPort: Int) {
-        if (proc != null) {
-            log("Slipstream already running.")
-            return
-        }
-
-        try {
-            val exe = getSlipstreamExe()
-
-            val args = mutableListOf<String>()
-            args.add(exe.absolutePath)
-            resolvers.forEach { args.addAll(listOf("--resolver", it)) }
-            args.addAll(listOf("--domain", domain, "--tcp-listen-port", tcpListenPort.toString()))
-
-            log("Starting slipstream: ${args.joinToString(" ")}")
-
-            val p = ProcessBuilder(args)
-                .redirectErrorStream(true) // ✅ merge stdout+stderr
-                .start()
-
-            proc = p
-
-            procJob?.cancel()
-            procJob = scope.launch {
-                // ✅ read everything
-                streamLines(p.inputStream) { log("[SS] $it") }
-
-                val code = try { p.waitFor() } catch (_: Throwable) { -1 }
-                log("Slipstream exited with code=$code")
-
-                proc = null
-                procJob = null
-                onExitListener?.invoke(code)
+        synchronized(startLock) {
+            if (isRunning || proc != null) {
+                log("Slipstream already running.")
+                return
             }
 
-        } catch (t: Throwable) {
-            log("Slipstream start failed: $t")
-            proc = null
-            procJob = null
+            try {
+                val exe = getSlipstreamExe()
+
+                val args = mutableListOf<String>()
+                args.add(exe.absolutePath)
+                resolvers.forEach { args.addAll(listOf("--resolver", it)) }
+                args.addAll(listOf("--domain", domain, "--tcp-listen-port", tcpListenPort.toString()))
+
+                log("Starting slipstream: ${args.joinToString(" ")}")
+
+                val p = ProcessBuilder(args)
+                    .redirectErrorStream(true)
+                    .start()
+
+                proc = p
+                isRunning = true
+
+                procJob?.cancel()
+                procJob = scope.launch {
+                    streamLines(p.inputStream) { log("[SS] $it") }
+
+                    val code = try { p.waitFor() } catch (_: Throwable) { -1 }
+                    log("Slipstream exited with code=$code")
+
+                    synchronized(startLock) {
+                        proc = null
+                        procJob = null
+                        isRunning = false
+                    }
+                    onExitListener?.invoke(code)
+                }
+
+            } catch (t: Throwable) {
+                log("Slipstream start failed: $t")
+                synchronized(startLock) {
+                    proc = null
+                    procJob = null
+                    isRunning = false
+                }
+            }
         }
     }
 
     fun stopSlipstream() {
         log("Stopping slipstream...")
 
-        val p = proc
-        proc = null
+        synchronized(startLock) {
+            val p = proc
+            proc = null
+            isRunning = false
 
-        procJob?.cancel()
-        procJob = null
+            procJob?.cancel()
+            procJob = null
 
-        if (p != null) {
-            try { p.destroy() } catch (_: Throwable) {}
-            if (Build.VERSION.SDK_INT >= 26) {
-                try {
-                    if (!p.waitFor(200, TimeUnit.MILLISECONDS)) {
-                        try { p.destroyForcibly() } catch (_: Throwable) {}
-                    }
-                } catch (_: Throwable) {}
+            if (p != null) {
+                try { p.destroy() } catch (_: Throwable) {}
+                if (Build.VERSION.SDK_INT >= 26) {
+                    try {
+                        // Increased timeout from 200ms to 2000ms for graceful shutdown
+                        if (!p.waitFor(2000, TimeUnit.MILLISECONDS)) {
+                            log("Process did not exit gracefully, forcing...")
+                            try { p.destroyForcibly() } catch (_: Throwable) {}
+                            // Wait additional 500ms for forced kill
+                            p.waitFor(500, TimeUnit.MILLISECONDS)
+                        }
+                    } catch (_: Throwable) {}
+                }
             }
         }
+    }
+    
+    fun isProcessRunning(): Boolean {
+        return isRunning && proc != null
     }
 
 
@@ -102,11 +124,13 @@ class SlipstreamService : Service() {
         super.onDestroy()
         stopSlipstream()
         scope.cancel()
+        isRunning = false
     }
 
     private val logBuffer = ArrayDeque<String>(300)
 
     private fun log(msg: String) {
+        AppLogger.i("CORE", msg)
         val l = logListener ?: return
         mainHandler.post { l.invoke(msg) }
     }

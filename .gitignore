@@ -19,3 +19,4 @@
 /app/keystore/
 *.jks
 *.keystore
+*.apk

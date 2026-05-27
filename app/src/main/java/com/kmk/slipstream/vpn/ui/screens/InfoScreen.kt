@@ -16,7 +16,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun InfoScreen(
     onMenu: () -> Unit,
-    githubUrl: String,
+    githubUrl: String?,
     telegramUrl: String
 ) {
     val ctx = LocalContext.current
@@ -44,12 +44,13 @@ fun InfoScreen(
                 }
             }
 
-            Spacer(Modifier.height(12.dp))
-
-            Button(onClick = { open(githubUrl) }, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Default.Launch, null)
-                Spacer(Modifier.width(8.dp))
-                Text("Open GitHub")
+            githubUrl?.let { url ->
+                Spacer(Modifier.height(12.dp))
+                Button(onClick = { open(url) }, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Launch, null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Open GitHub")
+                }
             }
 
             Spacer(Modifier.height(8.dp))

@@ -14,34 +14,43 @@ object PingUtils {
      */
     suspend fun ping204(url: String = "https://www.google.com/generate_204"): Pair<Long?, Int?> {
         return withContext(Dispatchers.IO) {
-            var minMs: Long? = null
-            var lastCode: Int? = null
+            // Test 1: Intentar con la URL original (Prueba DNS + HTTP)
+            val result = performPing(url)
+            if (result.first != null) return@withContext result
 
-            repeat(3) {
-                runCatching {
-                    val start = System.nanoTime()
-                    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                        connectTimeout = 2000 // Timeout más corto para evitar esperas largas
-                        readTimeout = 2000
-                        instanceFollowRedirects = true
-                        requestMethod = "GET"
-                        useCaches = false // Asegura que el ping sea real
-                    }
-                    conn.connect()
-                    val code = conn.responseCode
-                    lastCode = code
-                    runCatching { conn.inputStream?.close() }
-                    conn.disconnect()
+            // Test 2: Si falla, intentar con IP directa (Prueba de conectividad pura, sin DNS)
+            // Usamos http://1.1.1.1 que es el resolver de Cloudflare
+            android.util.Log.w("PingUtils", "Fallo con dominio, intentando con IP directa (1.1.1.1)...")
+            performPing("http://1.1.1.1")
+        }
+    }
 
-                    val ms = (System.nanoTime() - start) / 1_000_000
-                    
-                    // Si la respuesta es exitosa, guardamos el tiempo más bajo
-                    if (code == 204 || code == 200) {
-                        minMs = if (minMs == null) ms else min(minMs!!, ms)
-                    }
+    private fun performPing(url: String): Pair<Long?, Int?> {
+        var minMs: Long? = null
+        var lastCode: Int? = null
+
+        repeat(2) { i ->
+            runCatching {
+                val start = System.nanoTime()
+                val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 4000
+                    readTimeout = 4000
+                    instanceFollowRedirects = true
+                    requestMethod = "GET"
+                    useCaches = false
+                }
+                conn.connect()
+                val code = conn.responseCode
+                lastCode = code
+                runCatching { conn.inputStream?.close() }
+                conn.disconnect()
+
+                val ms = (System.nanoTime() - start) / 1_000_000
+                if (code in 200..399) {
+                    minMs = if (minMs == null) ms else kotlin.math.min(minMs!!, ms)
                 }
             }
-            Pair(minMs, lastCode)
         }
+        return Pair(minMs, lastCode)
     }
 }

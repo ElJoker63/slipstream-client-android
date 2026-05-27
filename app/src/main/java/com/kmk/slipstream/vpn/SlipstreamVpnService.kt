@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import com.kmk.slipstream.vpn.util.AppLogger
 import hev.htproxy.TProxyService
 import kotlinx.coroutines.*
 import java.io.File
@@ -47,6 +48,11 @@ class SlipstreamVpnService : VpnService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private var tunPfd: ParcelFileDescriptor? = null
+    @Volatile private var isStarting = false
+    @Volatile private var isReconnecting = false
+    @Volatile private var reconnectAttempts = 0
+    private val maxReconnectAttempts = 5
+    private val baseReconnectDelayMs = 2000L
 
     // Slipstream binding
     private var slipstream: SlipstreamService? = null
@@ -56,6 +62,7 @@ class SlipstreamVpnService : VpnService() {
     // stop guard
     @Volatile private var stopping = false
     private val stopLock = Any()
+    private val reconnectLock = Any()
 
     // traffic for notification (UID-based)
     private var notifJob: Job? = null
@@ -71,9 +78,11 @@ class SlipstreamVpnService : VpnService() {
             slipstream = b?.getService()
             bound = slipstream != null
             slipstream?.setOnExitListener { code ->
-                if (!stopping) {
-                    Log.w(TAG, "Slipstream core exited (code=$code). Reconnecting...")
+                if (!stopping && !isStarting) {
+                    AppLogger.w(TAG, "Slipstream core exited (code=$code). Reconnecting...")
                     reconnect()
+                } else if (isStarting) {
+                    AppLogger.i(TAG, "Slipstream exited during initial start, will handle in start flow")
                 }
             }
         }
@@ -116,10 +125,13 @@ class SlipstreamVpnService : VpnService() {
         }
 
         // Already running?
-        if (tunPfd != null) {
-            sendStatus(VpnUiState.CONNECTED, "already running")
+        if (tunPfd != null || isStarting) {
+            AppLogger.i(TAG, "VPN already running or starting. Ignoring request.")
+            sendStatus(if (isStarting) VpnUiState.CONNECTING else VpnUiState.CONNECTED, "already running")
             return START_STICKY
         }
+
+        isStarting = true // Marcamos que el proceso ha comenzado
 
         // reset stop guard for a new run
         synchronized(stopLock) { stopping = false }
@@ -146,6 +158,7 @@ class SlipstreamVpnService : VpnService() {
                     throw IllegalStateException("SlipstreamService bind timeout")
                 }
 
+                AppLogger.i(TAG, "Starting core services...")
                 slipstream?.startSlipstream(resolver, domain, port)
 
                 startTProxy(
@@ -160,9 +173,13 @@ class SlipstreamVpnService : VpnService() {
                 startTrafficNotificationUpdates()
                 updateNotification("Connected", "Starting traffic…")
                 sendStatus(VpnUiState.CONNECTED, "connected")
-
+                AppLogger.i(TAG, "VPN Connected successfully")
+                isStarting = false
+                reconnectAttempts = 0 // Reset reconnect counter on successful connection
             } catch (t: Throwable) {
-                Log.e(TAG, "VPN start failed: ${t.message}", t)
+                isStarting = false
+                reconnectAttempts = 0
+                AppLogger.e(TAG, "VPN start failed: ${t.message}")
                 sendStatus(VpnUiState.ERROR, "start failed: ${t.message ?: t::class.java.simpleName}")
                 stopAll("start failed")
                 sendStatus(VpnUiState.DISCONNECTED, "after error")
@@ -201,7 +218,11 @@ class SlipstreamVpnService : VpnService() {
             stopping = true
         }
 
-        Log.i(TAG, "stopAll: $reason")
+        AppLogger.i(TAG, "stopAll: $reason")
+
+        // Cancel reconnection
+        isReconnecting = false
+        reconnectAttempts = 0
 
         notifJob?.cancel()
         notifJob = null
@@ -222,7 +243,7 @@ class SlipstreamVpnService : VpnService() {
     private fun buildTun(): ParcelFileDescriptor {
         val builder = Builder()
             .setSession("Slipstream VPN")
-            .setMtu(1500)
+            .setMtu(1280) // Reducido de 1500 para evitar fragmentación y errores de escritura
             .addAddress("10.10.0.2", 32)
             .addRoute("0.0.0.0", 0)
             .addDnsServer("1.1.1.1")
@@ -235,32 +256,78 @@ class SlipstreamVpnService : VpnService() {
 
     private fun reconnect() {
         if (stopping) return
-        scope.launch {
-            Log.i(TAG, "Starting reconnection attempt...")
-            sendStatus(VpnUiState.CONNECTING, "reconnecting")
-            
-            // Clean up old session
-            try { TProxyService.TProxyStopService() } catch (_: Throwable) {}
-            try { slipstream?.stopSlipstream() } catch (_: Throwable) {}
-            
-            delay(2000) // wait a bit
-            
-            val intent = lastIntent
-            if (intent == null) {
-                Log.e(TAG, "Reconnect failed: lastIntent is null")
-                return@launch
+        if (isStarting) {
+            AppLogger.i(TAG, "Reconnect skipped: already starting")
+            return
+        }
+        
+        synchronized(reconnectLock) {
+            if (isReconnecting) {
+                AppLogger.i(TAG, "Reconnect skipped: already reconnecting")
+                return
             }
-
-            val dnsList = intent.getStringArrayExtra(EXTRA_RESOLVER_LIST) ?: emptyArray()
-            val resolver = dnsList.toList()
-            val domain = intent.getStringExtra(EXTRA_DOMAIN) ?: "google.com"
-            val port = 5201
-            val socksAuthEnabled = intent.getBooleanExtra(EXTRA_SOCKS5_AUTH_ENABLED, false)
-            val socksAuthUsername = intent.getStringExtra(EXTRA_SOCKS5_AUTH_USERNAME)
-            val socksAuthPassword = intent.getStringExtra(EXTRA_SOCKS5_AUTH_PASSWORD)
-
+            
+            if (reconnectAttempts >= maxReconnectAttempts) {
+                AppLogger.e(TAG, "Max reconnect attempts ($maxReconnectAttempts) reached. Giving up.")
+                sendStatus(VpnUiState.ERROR, "max reconnect attempts reached")
+                stopAll("max reconnect attempts")
+                sendStatus(VpnUiState.DISCONNECTED, "after max reconnects")
+                stopSelf()
+                return
+            }
+            
+            isReconnecting = true
+            reconnectAttempts++
+        }
+        
+        scope.launch {
             try {
+                val attempt = reconnectAttempts
+                val delayMs = calculateBackoffDelay(attempt)
+                
+                AppLogger.i(TAG, "Starting reconnection attempt $attempt/$maxReconnectAttempts (delay: ${delayMs}ms)")
+                sendStatus(VpnUiState.CONNECTING, "reconnecting (attempt $attempt)")
+                
+                // Validate TUN interface
+                if (tunPfd == null) {
+                    AppLogger.e(TAG, "Reconnect failed: TUN interface is null")
+                    throw IllegalStateException("TUN interface is null")
+                }
+                
+                // Clean up old session with proper timeout
+                AppLogger.i(TAG, "Cleaning up old session...")
+                try { TProxyService.TProxyStopService() } catch (_: Throwable) {}
+                
+                // Wait for TProxy to stop
+                delay(500)
+                
+                try { slipstream?.stopSlipstream() } catch (_: Throwable) {}
+                
+                // Wait for slipstream to stop
+                delay(500)
+                
+                // Exponential backoff delay
+                delay(delayMs)
+                
+                val intent = lastIntent
+                if (intent == null) {
+                    Log.e(TAG, "Reconnect failed: lastIntent is null")
+                    throw IllegalStateException("lastIntent is null")
+                }
+
+                val dnsList = intent.getStringArrayExtra(EXTRA_RESOLVER_LIST) ?: emptyArray()
+                val resolver = dnsList.toList()
+                val domain = intent.getStringExtra(EXTRA_DOMAIN) ?: "google.com"
+                val port = 5201
+                val socksAuthEnabled = intent.getBooleanExtra(EXTRA_SOCKS5_AUTH_ENABLED, false)
+                val socksAuthUsername = intent.getStringExtra(EXTRA_SOCKS5_AUTH_USERNAME)
+                val socksAuthPassword = intent.getStringExtra(EXTRA_SOCKS5_AUTH_PASSWORD)
+
+                AppLogger.i(TAG, "Reconnection attempt $attempt: starting core...")
                 slipstream?.startSlipstream(resolver, domain, port)
+                
+                // Wait a bit for slipstream to be ready
+                delay(1000)
                 
                 startTProxy(
                     tun = tunPfd!!,
@@ -273,11 +340,33 @@ class SlipstreamVpnService : VpnService() {
                 
                 sendStatus(VpnUiState.CONNECTED, "reconnected")
                 updateNotification("Connected", "Reconnected after interruption")
+                AppLogger.i(TAG, "VPN Reconnected successfully (attempt $attempt)")
+                
+                // Reset reconnect counter on successful reconnection
+                reconnectAttempts = 0
             } catch (t: Throwable) {
-                Log.e(TAG, "Reconnection failed: ${t.message}")
-                // It will trigger again if the process fails to start
+                AppLogger.e(TAG, "Reconnection attempt $reconnectAttempts failed: ${t.message}")
+                
+                if (reconnectAttempts >= maxReconnectAttempts) {
+                    AppLogger.e(TAG, "Max reconnect attempts reached. Stopping.")
+                    sendStatus(VpnUiState.ERROR, "reconnection failed after $maxReconnectAttempts attempts")
+                    stopAll("reconnection failed")
+                    sendStatus(VpnUiState.DISCONNECTED, "after reconnection failure")
+                    stopSelf()
+                } else {
+                    // Schedule next reconnection attempt via onExitListener
+                    AppLogger.i(TAG, "Will attempt reconnection again if process exits")
+                }
+            } finally {
+                isReconnecting = false
             }
         }
+    }
+    
+    private fun calculateBackoffDelay(attempt: Int): Long {
+        // Exponential backoff: 2s, 4s, 8s, 16s, 32s (capped at 30s)
+        val delay = (baseReconnectDelayMs * (1 shl (attempt - 1))).coerceAtMost(30000L)
+        return delay
     }
 
     private fun safeUnbind() {
@@ -296,7 +385,7 @@ class SlipstreamVpnService : VpnService() {
     private fun writeTproxyConfig(
         socksHost: String,
         socksPort: Int,
-        mtu: Int = 1500,
+        mtu: Int = 1280, // Sincronizado con el MTU del túnel
         authEnabled: Boolean = false,
         username: String? = null,
         password: String? = null
@@ -305,7 +394,7 @@ class SlipstreamVpnService : VpnService() {
         val sb = StringBuilder()
 
         sb.append("misc:\n")
-        sb.append("  task-stack-size: 8192\n")
+        sb.append("  task-stack-size: 16384\n") // Aumentado de 8192 para mejor manejo de colas
         sb.append("tunnel:\n")
         sb.append("  mtu: $mtu\n")
         sb.append("socks5:\n")
@@ -330,9 +419,9 @@ class SlipstreamVpnService : VpnService() {
         username: String? = null,
         password: String? = null
     ) {
-        val conf = writeTproxyConfig(socksHost, socksPort, 1500, authEnabled, username, password)
+        val conf = writeTproxyConfig(socksHost, socksPort, 1280, authEnabled, username, password)
         val fd = tun.fd
-        Log.i(TAG, "TProxyStartService conf=${conf.absolutePath} fd=$fd socks=$socksHost:$socksPort auth=$authEnabled")
+        AppLogger.i(TAG, "TProxyStartService conf=${conf.absolutePath} fd=$fd socks=$socksHost:$socksPort auth=$authEnabled")
         TProxyService.TProxyStartService(conf.absolutePath, fd)
     }
 

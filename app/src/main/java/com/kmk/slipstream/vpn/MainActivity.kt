@@ -3,6 +3,7 @@ package com.kmk.slipstream.vpn
 import android.Manifest
 import android.content.*
 import android.content.pm.PackageManager
+import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
@@ -10,17 +11,22 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.RequiresApi
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import com.kmk.slipstream.vpn.data.SlipstreamConfig
 import com.kmk.slipstream.vpn.ui.nav.DrawerPage
 import com.kmk.slipstream.vpn.ui.screens.DnsListScreen
@@ -29,6 +35,9 @@ import com.kmk.slipstream.vpn.ui.screens.InfoScreen
 import com.kmk.slipstream.vpn.ui.screens.LogsScreen
 import com.kmk.slipstream.vpn.ui.screens.SpeedScreen
 import com.kmk.slipstream.vpn.ui.theme.SlipstreamVpnTheme
+import com.kmk.slipstream.vpn.util.AppLogger
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 
 
@@ -70,6 +79,7 @@ class MainActivity : ComponentActivity() {
     @RequiresApi(Build.VERSION_CODES.O)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppLogger.init(this)
 
         bindService(Intent(this, SlipstreamService::class.java), conn, Context.BIND_AUTO_CREATE)
 
@@ -104,8 +114,8 @@ class MainActivity : ComponentActivity() {
 
                             // optional auto alerts (if you want)
                             when (vpnState.value) {
-                                VpnUiState.CONNECTED -> alert("Connected")
-                                VpnUiState.DISCONNECTED -> alert("Disconnected")
+                                VpnUiState.CONNECTED -> { /* alert("Connected") */ }
+                                VpnUiState.DISCONNECTED -> { /* alert("Disconnected") */ }
                                 else -> {}
                             }
                         }
@@ -120,21 +130,28 @@ class MainActivity : ComponentActivity() {
                     onDispose { runCatching { unregisterReceiver(receiver) } }
                 }
 
-                val logs = remember { mutableStateListOf<String>() }
+                val logs = remember { mutableStateListOf<String>().apply { addAll(AppLogger.getLogs()) } }
+
+                LaunchedEffect(Unit) {
+                    AppLogger.logFlow
+                        .onEach { log ->
+                            if (logs.size > 1000) logs.removeAt(0)
+                            logs.add(log) // Añadir al final (abajo)
+                        }
+                        .launchIn(this)
+                }
+
                 fun addLog(s: String) {
-                    scope.launch {
-                        if (logs.size > 1000) logs.removeRange(logs.size - 200, logs.size)
-                        logs.add(0, s)
-                    }
+                    AppLogger.i("UI", s)
                 }
 
                 LaunchedEffect(Unit) {
-                    uiLogSink = ::addLog
-                    slipstream?.setLogListener(::addLog)
+                    uiLogSink = { AppLogger.i("CORE", it) }
+                    slipstream?.setLogListener { AppLogger.i("CORE", it) }
                 }
 
                 fun connectWithConfig(cfg: SlipstreamConfig, setState: (VpnUiState) -> Unit) {
-                    val prep = android.net.VpnService.prepare(this@MainActivity)
+                    val prep = VpnService.prepare(this@MainActivity)
 
                     val start = {
                         val prefs = getSharedPreferences("vpn", Context.MODE_PRIVATE)
@@ -150,7 +167,7 @@ class MainActivity : ComponentActivity() {
                         }
 
                         setState(VpnUiState.CONNECTING)
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
+                        startForegroundService(i)
                         addLog("VPN start requested with DNS: $dnsList")
                     }
 
@@ -167,7 +184,7 @@ class MainActivity : ComponentActivity() {
                     val i = Intent(this@MainActivity, SlipstreamVpnService::class.java).apply {
                         action = SlipstreamVpnService.ACTION_DISCONNECT
                     }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
+                    startForegroundService(i)
                     slipstream?.stopSlipstream()
                     addLog("VPN stop requested.")
                 }
@@ -182,7 +199,25 @@ class MainActivity : ComponentActivity() {
                         drawerState = drawerState,
                         drawerContent = {
                             ModalDrawerSheet {
-                                Text("Slipstream", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
+                                    horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
+                                ) {
+                                    Image(
+                                        painter = painterResource(id = R.drawable.ic_app_logo),
+                                        contentDescription = "Logo",
+                                        modifier = Modifier
+                                            .size(80.dp)
+                                            .clip(CircleShape)
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    Text("Slipstream", style = MaterialTheme.typography.titleLarge)
+                                }
+
+                                HorizontalDivider()
+                                Spacer(Modifier.height(8.dp))
 
                                 NavigationDrawerItem(
                                     label = { Text("Home") },
@@ -200,7 +235,7 @@ class MainActivity : ComponentActivity() {
                                     label = { Text("Logs") },
                                     selected = page == DrawerPage.LOGS,
                                     onClick = { page = DrawerPage.LOGS; scope.launch { drawerState.close() } },
-                                    icon = { Icon(Icons.Default.List, null) }
+                                    icon = { Icon(Icons.AutoMirrored.Filled.List, null) }
                                 )
                                 NavigationDrawerItem(
                                     label = { Text("Dns") },
@@ -216,11 +251,11 @@ class MainActivity : ComponentActivity() {
                                 )
 
                                 Spacer(Modifier.height(12.dp))
-                                Divider()
+                                HorizontalDivider()
                                 Spacer(Modifier.height(12.dp))
 
-                                DrawerLinkItem("GitHub", "Project repository", Icons.Default.Launch, "https://github.com/ElJoker63/slipstream-client-android", this@MainActivity)
-                                DrawerLinkItem("Telegram", "ElQtAnikila", Icons.Default.Send, "https://t.me/imoverclocked", this@MainActivity)
+                                // DrawerLinkItem("GitHub", "Project repository", Icons.Default.Launch, "https://github.com/ElJoker63/slipstream-client-android", this@MainActivity)
+                                DrawerLinkItem(context = this@MainActivity)
                             }
                         },
                         modifier = Modifier.padding(innerPadding)
@@ -247,7 +282,12 @@ class MainActivity : ComponentActivity() {
                             )
 
                             DrawerPage.LOGS -> LogsScreen(
+                                context = this@MainActivity,
                                 onMenu = { scope.launch { drawerState.open() } },
+                                onClearLogs = { 
+                                    AppLogger.clearLogs()
+                                    logs.clear() 
+                                },
                                 vpnState = vpnState.value,
                                 statusReason = statusReason.value,
                                 logs = logs
@@ -260,8 +300,8 @@ class MainActivity : ComponentActivity() {
 
                             DrawerPage.INFO -> InfoScreen(
                                 onMenu = { scope.launch { drawerState.open() } },
-                                githubUrl = "https://github.com/ElJoker63/slipstream-client-android",
-                                telegramUrl = "https://t.me/ElJoker63"
+                                githubUrl = null,
+                                telegramUrl = "https://t.me/slipstream_cu"
                             )
                         }
                     }
@@ -285,11 +325,11 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun DrawerLinkItem(
-    title: String,
-    subtitle: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    url: String,
-    context: Context
+    context: Context,
+    title: String = "Telegram",
+    subtitle: String = "Slipstream",
+    icon: ImageVector = Icons.AutoMirrored.Filled.Send,
+    url: String = "https://t.me/slipstream_cu"
 ) {
     NavigationDrawerItem(
         label = {
@@ -300,7 +340,7 @@ private fun DrawerLinkItem(
         },
         selected = false,
         onClick = {
-            val i = Intent(Intent.ACTION_VIEW).apply { data = android.net.Uri.parse(url) }
+            val i = Intent(Intent.ACTION_VIEW).apply { data = url.toUri() }
             runCatching { context.startActivity(i) }
         },
         icon = { Icon(icon, null) }

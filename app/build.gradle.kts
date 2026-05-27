@@ -35,9 +35,40 @@ fun clangFor(triple: String, api: Int, toolchainBin: File): String = when (tripl
 
 fun File.bashPath(): String {
     val normalized = absolutePath.replace('\\', '/')
+    val drivePrefix = if (bashExecutable() == "bash") "/mnt/" else "/"
     return normalized.replace(Regex("^([A-Za-z]):")) { match ->
-        "/${match.groupValues[1].lowercase()}"
+        "$drivePrefix${match.groupValues[1].lowercase()}"
     }
+}
+
+fun File.windowsForwardPath(): String =
+    absolutePath.replace('\\', '/')
+
+fun File.windowsExecutablePath(): String {
+    if (!System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
+        return absolutePath
+    }
+    if (extension.equals("exe", ignoreCase = true) || extension.equals("cmd", ignoreCase = true)) {
+        return absolutePath
+    }
+    val cmd = File("$absolutePath.cmd")
+    if (cmd.isFile) return cmd.absolutePath
+    val exe = File("$absolutePath.exe")
+    if (exe.isFile) return exe.absolutePath
+    return absolutePath
+}
+
+fun bashExecutable(): String {
+    if (!System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
+        return "bash"
+    }
+
+    return listOf(
+        File("C:/Program Files/Git/bin/bash.exe"),
+        File("C:/Program Files/Git/usr/bin/bash.exe"),
+        File(System.getenv("USERPROFILE") ?: "", "scoop/apps/git/current/bin/bash.exe"),
+    ).firstOrNull { it.isFile }?.absolutePath
+        ?: throw GradleException("Git Bash is required on Windows. Install Git for Windows; WSL bash is not used for this build.")
 }
 
 val keystorePropsFile = rootProject.file("app/keystore.properties")
@@ -143,6 +174,14 @@ val opensslOutDir = file("src/main/rust/openssl-out")
 
 fun opensslTaskName(abi: String) = "buildOpenSsl" + abi.replace("-", "").replace("_", "")
 
+fun androidTripleForAbi(abi: String): String = when (abi) {
+    "arm64-v8a" -> "aarch64-linux-android"
+    "armeabi-v7a" -> "armv7-linux-androideabi"
+    "x86" -> "i686-linux-android"
+    "x86_64" -> "x86_64-linux-android"
+    else -> error("Unsupported Android ABI: $abi")
+}
+
 opensslAbis.forEach { a ->
     tasks.register(opensslTaskName(a.abi)) {
         group = "native"
@@ -158,11 +197,19 @@ opensslAbis.forEach { a ->
             val bin = ndkDir.resolve("toolchains/llvm/prebuilt").resolve(hostTag).resolve("bin")
 
             val api = minSdkVersionValue
-            val prefix = opensslOutDir.resolve(a.abi).bashPath()
+            val prefix = opensslOutDir.resolve(a.abi).windowsForwardPath()
             val buildDir = layout.buildDirectory.dir("openssl-build/${a.abi}").get().asFile
-            val buildDirPath = buildDir.bashPath()
+            val buildDirPath = buildDir.windowsForwardPath()
             val ndkDirPath = ndkDir.bashPath()
-            val opensslSrcPath = opensslSrcDir.bashPath()
+            val opensslSrcPath = opensslSrcDir.windowsForwardPath()
+            val binPath = bin.bashPath()
+            val ccFile = File(clangFor(androidTripleForAbi(a.abi), api, bin))
+            val ccPath = ccFile.windowsForwardPath()
+            val cxxPath = File(ccFile.absolutePath.replace("clang", "clang++")).windowsForwardPath()
+            val arPath = bin.resolve("llvm-ar").windowsForwardPath()
+            val ranlibPath = bin.resolve("llvm-ranlib").windowsForwardPath()
+            val perlLibPath = file("src/main/rust/perl-libs").bashPath()
+            val scriptFile = buildDir.resolve("build-openssl.sh")
 
             val nproc = Runtime.getRuntime().availableProcessors()
             val cmd = """
@@ -178,6 +225,12 @@ opensslAbis.forEach { a ->
 
         export ANDROID_NDK_ROOT="$ndkDirPath"
         export ANDROID_NDK="$ndkDirPath"
+        export PERL5LIB="$perlLibPath:${'$'}{PERL5LIB:-}"
+        export PATH="$binPath:${'$'}PATH"
+        export CC="$ccPath"
+        export CXX="$cxxPath"
+        export AR="$arPath"
+        export RANLIB="$ranlibPath"
 
 
         perl "$opensslSrcPath/Configure" ${a.opensslTarget} -D__ANDROID_API__=$api \
@@ -186,13 +239,12 @@ opensslAbis.forEach { a ->
         make -j$nproc || make -j1
         make install_sw
     """.trimIndent()
+            scriptFile.parentFile.mkdirs()
+            scriptFile.writeText(cmd + "\n")
 
             exec {
-                executable = "bash"
-                args("-c", cmd)
-
-                val currentPath = System.getenv("PATH") ?: ""
-                environment("PATH", "${bin.bashPath()}:$currentPath")
+                executable = bashExecutable()
+                args(scriptFile.bashPath())
             }
         }
     }
@@ -223,7 +275,11 @@ val rustDir = file("src/main/rust/slipstream-rust").absolutePath
 val outSoName = "libslipstream.so"
 
 // Must exist: a shim that calls python wrapper, similar to Mygod
-val linkerShim = file("src/main/rust/linker-shim.sh").absolutePath
+val linkerShim = if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
+    file("src/main/rust/linker-shim.cmd").absolutePath
+} else {
+    file("src/main/rust/linker-shim.sh").absolutePath
+}
 
 fun rustTaskName(abi: String) = "buildRust" + abi.replace("-", "").replace("_", "")
 
@@ -245,16 +301,16 @@ rustTargets.forEach { t ->
             val triple = t.triple
             val key = cargoEnvKeyFor(triple)
 
-            val cc = clangFor(triple, api, binDir)
+            val cc = File(clangFor(triple, api, binDir)).windowsExecutablePath().replace('\\', '/')
             val cxx = cc.replace("clang", "clang++")
-            val ar = binDir.resolve("llvm-ar").absolutePath
-            val ranlib = binDir.resolve("llvm-ranlib").absolutePath
+            val ar = binDir.resolve("llvm-ar").windowsExecutablePath().replace('\\', '/')
+            val ranlib = binDir.resolve("llvm-ranlib").windowsExecutablePath().replace('\\', '/')
 
-            val opensslRoot = "$projectDir/src/main/rust/openssl-out/${t.abi}"
+            val opensslRoot = file("$projectDir/src/main/rust/openssl-out/${t.abi}").windowsForwardPath()
 
             // Per-ABI picoquic build directory (must be isolated to avoid arch mixing)
-            val picoDir = "$rustDir/.picoquic-build/${t.abi}"
-            file(picoDir).deleteRecursively()
+            val picoDirFile = file("$rustDir/.picoquic-build/${t.abi}")
+            val picoDir = picoDirFile.windowsForwardPath()
 
             // Output path inside jniLibs
             val outDir = file("$projectDir/src/main/jniLibs/${t.abi}")
@@ -273,7 +329,7 @@ rustTargets.forEach { t ->
                 )
 
                 // --- Android / NDK environment ---
-                environment("ANDROID_NDK_HOME", ndkDir.absolutePath)
+                environment("ANDROID_NDK_HOME", ndkDir.windowsForwardPath())
                 environment("ANDROID_ABI", t.abi)
                 environment("ANDROID_PLATFORM", "android-$api")
 
@@ -298,6 +354,7 @@ rustTargets.forEach { t ->
                 environment("PICOQUIC_BUILD_DIR", picoDir)
                 environment("PICOQUIC_AUTO_BUILD", "1")
                 environment("BUILD_TYPE", if (cargoProfile == "release") "Release" else "Debug")
+                environment("CMAKE_GENERATOR", "Ninja")
 
                 // --- OpenSSL paths for openssl-sys + CMake ---
                 environment("OPENSSL_ROOT_DIR", opensslRoot)

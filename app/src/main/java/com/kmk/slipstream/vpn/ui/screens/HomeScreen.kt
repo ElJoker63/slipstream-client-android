@@ -22,6 +22,7 @@ import com.kmk.slipstream.vpn.ui.components.BottomBarPingAndToggle
 import com.kmk.slipstream.vpn.ui.components.ConfigRow
 import com.kmk.slipstream.vpn.util.ClipboardUtils
 import com.kmk.slipstream.vpn.util.PingUtils
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -134,6 +135,24 @@ fun HomeScreen(
         alertMessage("Share: ${cfg.name}")
     }
 
+    // Reset and Auto-refresh ping
+    LaunchedEffect(vpnState) {
+        if (vpnState == VpnUiState.CONNECTED) {
+            while (true) {
+                pinging = true
+                val (ms, code) = PingUtils.ping204()
+                pingMs = ms
+                pingCode = code
+                pinging = false
+                delay(2000) // Espera 2 segundos antes del próximo ping automático
+            }
+        } else {
+            pingMs = null
+            pingCode = null
+            pinging = false
+        }
+    }
+
     val selectedCfg = configs.firstOrNull { it.id == selectedId }
 
     Scaffold(
@@ -166,13 +185,11 @@ fun HomeScreen(
                         pingMs = ms
                         pingCode = code
                         pinging = false
-                        alertMessage("Ping: ${ms ?: "-"}ms (HTTP ${code ?: "?"})")
                     }
                 },
                 onToggle = {
                     if (locked) return@BottomBarPingAndToggle
                     if (running) {
-                        alertMessage("Disconnecting...")
                         onDisconnect()
                     } else {
                         val cfg = selectedCfg
@@ -180,7 +197,6 @@ fun HomeScreen(
                             alertMessage("No config selected")
                             return@BottomBarPingAndToggle
                         }
-                        alertMessage("Connecting...")
                         onConnect(cfg)
                     }
                 }

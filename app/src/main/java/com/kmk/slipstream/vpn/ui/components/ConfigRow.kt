@@ -61,6 +61,10 @@ fun ConfigRow(
             /*IconButton(onClick = onEdit, enabled = enabled) {
                 Icon(Icons.Default.Edit, contentDescription = "Edit")
             }*/
+
+            /*IconButton(onClick = onEdit, enabled = enabled) {
+                Icon(Icons.Default.Edit, contentDescription = "Edit")
+            }*/
             IconButton(onClick = onDelete, enabled = enabled) {
                 Icon(Icons.Default.Delete, contentDescription = "Delete")
             }
